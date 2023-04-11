@@ -3,6 +3,7 @@ const axios = require("axios");
 const cors = require("cors");
 const morgan = require("morgan");
 const { createClient } = require("redis");
+const e = require("express");
 
 const app = express();
 const redisClient = createClient({ legacyMode: true });
@@ -14,35 +15,43 @@ const DEFAULT_EXPIRATION = 3600;
 app.use(cors());
 app.use(morgan("dev"));
 
-app.get("/photos", (req, res) => {
+app.get("/photos", async (req, res) => {
   const albumId = req.query.albumId;
-  redisClient.get(`photos?albumId=${albumId}`, async (error, photos) => {
-    if (error) console.error(error);
-    if (photos !== null) {
-      return res.json(JSON.parse(photos));
-    } else {
-      const { data } = await axios.get(
-        "https://jsonplaceholder.typicode.com/photos",
-        { params: { albumId } }
-      );
-      redisClient.setEx(
-        `photos?albumId=${albumId}`,
-        DEFAULT_EXPIRATION,
-        JSON.stringify(data)
-      );
-
-      return res.json(data);
-    }
+  console.log(albumId);
+  const photos = await getOrSetCache(`photos?albumId=${albumId}`, async () => {
+    const { data } = await axios.get(
+      "https://jsonplaceholder.typicode.com/photos",
+      {
+        params: { albumId },
+      }
+    );
+    return data;
   });
+  res.json(photos);
 });
 
 app.get("/photos/:id", async (req, res) => {
-  const { data } = await axios.get(
-    `https://jsonplaceholder.typicode.com/photos/${req.params.id}`
-  );
+  const photo = await getOrSetCache(`photos:${req.params.id}`, async () => {
+    const { data } = await axios.get(
+      `https://jsonplaceholder.typicode.com/photos/${req.params.id}`
+    );
+    return data;
+  });
 
-  res.json(data);
+  res.json(photo);
 });
+
+function getOrSetCache(key, cb) {
+  return new Promise((resolve, reject) => {
+    redisClient.get(key, async (error, data) => {
+      if (error) return reject(error);
+      if (data !== null) return resolve(JSON.parse(data));
+      const freshData = await cb();
+      redisClient.setEx(key, DEFAULT_EXPIRATION, JSON.stringify(freshData));
+      resolve(freshData);
+    });
+  });
+}
 
 async function connectRedis() {
   await redisClient.connect();
